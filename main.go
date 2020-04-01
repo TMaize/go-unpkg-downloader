@@ -73,7 +73,7 @@ func DownloadFile(name, version, filename string) error {
 	if code == 404 {
 		return errors.New("404 error " + url)
 	}
-	fmt.Println(code)
+
 	savePath := fmt.Sprintf("./%s@%s%s", name, version, filename)
 
 	// 父目录
