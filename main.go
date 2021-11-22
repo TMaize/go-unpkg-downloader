@@ -3,149 +3,205 @@ package main
 import (
 	"encoding/json"
 	"errors"
-	"flag"
 	"fmt"
 	"github.com/guonaihong/gout"
+	"github.com/spf13/cobra"
 	"io/ioutil"
-	"log"
+	"net/url"
 	"os"
-	"path"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 )
 
-const PKGUrl = "https://unpkg.com"
-
 type PageData struct {
 	FileName       string `json:"filename"`
 	PackageName    string `json:"packageName"`
 	PackageVersion string `json:"packageVersion"`
-	Target         struct {
-		Path    string            `json:"path"`
-		Type    string            `json:"type"`
-		Details map[string]Detail `json:"details"`
-	} `json:"target"`
+	Target         Target `json:"target"`
 }
 
-type Detail struct {
-	Path string `json:"path"`
-	Type string `json:"type"`
+type Target struct {
+	Path    string                 `json:"path"`
+	Type    string                 `json:"type"`
+	Details map[string]interface{} `json:"details"`
 }
 
-func ParsePage(name, version, filename string) (PageData, error) {
-	url := fmt.Sprintf("%s/browse/%s@%s%s", PKGUrl, name, version, filename)
-	if !strings.HasSuffix(url, "/") {
-		url = url + "/"
+func (data PageData) isFile() bool {
+	return data.Target.Type == "file"
+}
+
+func (data PageData) getBrowseUrl() string {
+	return "https://unpkg.com/browse/" + data.PackageName + "@" + data.PackageVersion + data.FileName
+}
+
+func (data PageData) getDownloadUrl() string {
+	return "https://unpkg.com/" + data.PackageName + "@" + data.PackageVersion + data.FileName
+}
+
+func (data PageData) getChildren() []PageData {
+	list := make([]PageData, 0)
+	if data.Target.Details == nil {
+		return list
 	}
+	keys := make([]string, 0)
+	sort.Strings(keys)
+	for key := range data.Target.Details {
+		keys = append(keys, key)
+	}
+
+	for _, key := range keys {
+
+		var item = data.Target.Details[key].(map[string]interface{})
+		var fileType = item["type"].(string)
+		var filePath = item["path"].(string)
+		var fileName = item["path"].(string)
+		if fileType == "directory" {
+			fileName = fileName + "/"
+		}
+		list = append(list, PageData{
+			FileName:       fileName,
+			PackageName:    data.PackageName,
+			PackageVersion: data.PackageVersion,
+			Target:         Target{Path: filePath, Type: fileType, Details: nil},
+		})
+	}
+	return list
+}
+
+//---------------------------------------------
+
+func ParsePage(url string) PageData {
 	html := ""
 	var code int
 	pageData := PageData{}
 	err := gout.GET(url).BindBody(&html).Code(&code).Do()
 	if err != nil {
-		return pageData, err
-	}
-	if code == 404 {
-		return pageData, errors.New("404 error " + url)
+		panic(err)
 	}
 	jsonRule := regexp.MustCompile(`window.__DATA__ =(.+?)</script>`)
 	result := jsonRule.FindAllStringSubmatch(html, 1)
 	if len(result) != 1 || len(result[0]) != 2 {
-		return pageData, errors.New("解析网页数据失败,url=" + url)
+		panic("not found __DATA__ at " + url)
 	}
-
 	err = json.Unmarshal([]byte(result[0][1]), &pageData)
 	if err != nil {
-		return pageData, err
+		panic("unmarshal __DATA__ error")
 	}
-	return pageData, nil
+	return pageData
 }
 
-func DownloadFile(name, version, filename string) error {
-	log.Println(filename)
-	url := fmt.Sprintf("%s/%s@%s%s", PKGUrl, name, version, filename)
+func DownloadDir(browseUrl, dest string) {
+	data := ParsePage(browseUrl)
+	children := data.getChildren()
+	for _, item := range children {
+		if item.isFile() {
+			DownloadFile(item.getDownloadUrl(), dest)
+		} else {
+			DownloadDir(item.getBrowseUrl(), dest)
+		}
+	}
+}
+
+func DownloadFile(downloadUrl, dest string) {
+	parse, err := url.Parse(downloadUrl)
+	if err != nil {
+		panic(err)
+	}
+	dest, err = filepath.Abs(dest)
+	if err != nil {
+		panic(err)
+	}
+	savePath := filepath.Join(dest, parse.Path)
+
+	fmt.Printf("%s\n%s\n\n", downloadUrl, strings.ReplaceAll(savePath, "\\", "/"))
+
 	raw := make([]byte, 0)
 	var code int
-	err := gout.GET(url).BindBody(&raw).Code(&code).Do()
+	err = gout.GET(downloadUrl).BindBody(&raw).Code(&code).Do()
 	if err != nil {
-		return err
+		panic(err)
 	}
-	if code == 404 {
-		return errors.New("404 error " + url)
+	if code != 200 {
+		panic(fmt.Sprint(code, "error", downloadUrl))
 	}
 
-	savePath := fmt.Sprintf("./%s@%s%s", name, version, filename)
-
-	// 父目录
-	_, err = os.Stat(path.Join(savePath, ".."))
+	_, err = os.Stat(filepath.Join(savePath, ".."))
 	if err != nil {
-		err = os.MkdirAll(path.Join(savePath, ".."), os.ModeDir)
+		err = os.MkdirAll(filepath.Join(savePath, ".."), os.ModeDir)
 		if err != nil {
-			return err
+			panic(err)
 		}
 	}
-	return ioutil.WriteFile(savePath, raw, 0766)
+	err = ioutil.WriteFile(savePath, raw, 0766)
+	if err != nil {
+		panic(err)
+	}
 }
 
-func DownloadDir(name, version, filename string) error {
-	pageData, err := ParsePage(name, version, filename)
+func GetStdUrl(pkg string) string {
+	pkg = strings.Replace(pkg, "http:", "", 1)
+	pkg = strings.Replace(pkg, "https:", "", 1)
+	pkg = strings.Replace(pkg, "unpkg.com/browse", "", 1)
+	pkg = strings.Replace(pkg, "unpkg.com", "", 1)
+	reg := regexp.MustCompile("/{2,}")
+	pkg = string(reg.ReplaceAll([]byte(pkg), []byte("/")))
+	if strings.HasPrefix(pkg, "/") {
+		pkg = pkg[1:]
+	}
+
+	browseUrl := "https://unpkg.com/browse/" + pkg
+
+	var statusCode int
+	err := gout.HEAD(browseUrl).Code(&statusCode).Do()
 	if err != nil {
-		return err
+		panic(err)
 	}
 
-	// 强迫症排下序
-	dirArr := make([]string, 0)
-	fileArr := make([]string, 0)
-	for key, item := range pageData.Target.Details {
-		if item.Type == "directory" {
-			dirArr = append(dirArr, key)
-		}
-		if item.Type == "file" && !strings.HasSuffix(item.Path, ".DS_Store") {
-			fileArr = append(fileArr, key)
-		}
-	}
-	sort.Strings(dirArr)
-	sort.Strings(fileArr)
-
-	for _, key := range dirArr {
-		err = DownloadDir(name, version, pageData.Target.Details[key].Path)
+	if statusCode != 200 && !strings.HasSuffix(browseUrl, "/") {
+		browseUrl = browseUrl + "/"
+		err = gout.HEAD(browseUrl).Code(&statusCode).Do()
 		if err != nil {
-			return err
+			panic(err)
 		}
-	}
 
-	for _, key := range fileArr {
-		err = DownloadFile(name, version, pageData.Target.Details[key].Path)
-		if err != nil {
-			return err
+		if statusCode != 200 {
+			panic(fmt.Sprintf("can't access %s %d", browseUrl, statusCode))
 		}
 	}
-	return nil
+	return browseUrl
 }
 
 func main() {
-	info := ""
-	filename := "/"
+	var dist = "./dist"
 
-	flag.StringVar(&info, "i", info, "package info. vue@2.6.11")
-	flag.StringVar(&filename, "f", filename, "download file or dir. /dist/ or /dist/vue.min.js")
-	flag.Parse()
+	command := &cobra.Command{
+		Use:   "go-unpkg-downloader pkg [flags]",
+		Short: "unpkg download tool",
+		Args: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 0 {
+				return errors.New("require pkg address")
+			}
+			return nil
+		},
+		Run: func(cmd *cobra.Command, args []string) {
+			pkg := args[0]
+			data := ParsePage(GetStdUrl(pkg))
 
-	info = strings.TrimSpace(info)
+			fmt.Printf("%s@%s\n\n", data.PackageName, data.PackageVersion)
 
-	arr := strings.Split(info, "@")
-	if info == "" || len(arr) != 2 || arr[0] == "" || arr[1] == "" {
-		flag.Usage()
-		os.Exit(0)
+			if data.isFile() {
+				DownloadFile(data.getDownloadUrl(), dist)
+			} else {
+				DownloadDir(data.getBrowseUrl(), dist)
+			}
+		},
 	}
+	command.Flags().StringVarP(&dist, "dist", "d", dist, "download save path")
 
-	var err error
-	if strings.HasSuffix(filename, "/") {
-		err = DownloadDir(arr[0], arr[1], filename)
-	} else {
-		err = DownloadFile(arr[0], arr[1], filename)
-	}
-	if err != nil {
-		log.Fatal(err)
+	if err := command.Execute(); err != nil {
+		fmt.Println(err)
+		os.Exit(1)
 	}
 }
