@@ -129,7 +129,7 @@ func DownloadFile(downloadUrl, dest string) {
 
 	_, err = os.Stat(filepath.Join(savePath, ".."))
 	if err != nil {
-		err = os.MkdirAll(filepath.Join(savePath, ".."), os.ModeDir)
+		err = os.MkdirAll(filepath.Join(savePath, ".."), os.ModePerm)
 		if err != nil {
 			panic(err)
 		}

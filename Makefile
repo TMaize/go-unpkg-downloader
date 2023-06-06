@@ -1,14 +1,23 @@
-.PHONY: clean
-.ONESHELL:
+.PHONY: build clean win linux mac mac2
 
-build:
+DIST=go-unpkg-downloader
+
+build: clean win linux mac mac2
+clean:
 	rm -rf dist
 	mkdir -p dist
-	GOOS=linux   GOARCH=amd64 go build -o ./dist/go-unpkg-downloader     *.go
-	GOOS=windows GOARCH=amd64 go build -o ./dist/go-unpkg-downloader.exe *.go
-	cd dist
-	7z a       go-unpkg-downloader_linux_amd64.tar     go-unpkg-downloader
-	7z a -sdel go-unpkg-downloader_linux_amd64.tar.gz  go-unpkg-downloader_linux_amd64.tar
-	7z a       go-unpkg-downloader_windows_amd64.zip   go-unpkg-downloader.exe
-
-
+win:
+	GOOS=windows GOARCH=amd64 go build -o ./dist/$(DIST).exe main.go
+	cd dist && 7z a -sdel $(DIST)-win32-x64.zip $(DIST).exe
+linux:
+	GOOS=linux GOARCH=amd64 go build -o ./dist/$(DIST) main.go
+	cd dist && 7z a -sdel $(DIST)-linux-x64.tar $(DIST)
+	cd dist && 7z a -sdel $(DIST)-linux-x64.tar.gz $(DIST)-linux-x64.tar
+mac:
+	GOOS=darwin GOARCH=amd64 go build -o ./dist/$(DIST) main.go
+	cd dist && 7z a -sdel $(DIST)-darwin-x64.tar $(DIST)
+	cd dist && 7z a -sdel $(DIST)-darwin-x64.tar.gz $(DIST)-darwin-x64.tar
+mac2:
+	GOOS=darwin GOARCH=arm64 go build -o ./dist/$(DIST) main.go
+	cd dist && 7z a -sdel $(DIST)-darwin-arm64.tar $(DIST)
+	cd dist && 7z a -sdel $(DIST)-darwin-arm64.tar.gz $(DIST)-darwin-arm64.tar
